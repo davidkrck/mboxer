@@ -12,36 +12,44 @@ s.bind(('',9999))
 signal.signal(signal.SIGCHLD,signal.SIG_IGN)
 s.listen(5)
 
+
 while True:
 	connected_socket,address=s.accept()
 	print(f'spojenie z {address}')
 	pid_chld=os.fork()
+	
 	if pid_chld==0:
 		s.close()
 		f=connected_socket.makefile('rwb')
+		
 		while True:
 		
-			poziadavka=f.readline().decode("ASCII")
-			print(poziadavka)
+			poziadavka=f.readline().decode("utf-8").strip()
 			
-					# 1) odpoved hlavicky "reply"
-					# 2) odpoved obsah "content_reply"
+			if not poziadavka:
+				break
+			
+#WRITE
 			if re.match("^WRITE$",poziadavka):
 			
-				hlavicka=f.readline().decode("ASCII")
+				hlavicka=f.readline().decode("utf-8")
 				m=re.match("\AMailbox",hlavicka)
 				
 				if m:
+				
 					mailbox = hlavicka
 					k=re.split(":",mailbox)
 					mailbox = k[1].rstrip()
-					if "/" in mailbox:
+					
+					if "/" in mailbox or not (all(ord(char) < 128 for char in mailbox[0])):
 						status_num,status_comment=(200,'Bad request')
+						header_reply=''
 						content_reply=''
+						
 					if not os.path.exists(mailbox):
 						os.mkdir(mailbox)
 					
-				hlavicka=f.readline().decode("ASCII")
+				hlavicka=f.readline().decode("utf-8")
 				c=re.match("\AContent-length",hlavicka)
 				
 				if c:
@@ -49,117 +57,128 @@ while True:
 					l=re.split(":",content_length)
 					content_length = l[1].rstrip("\n")
 					content_length = int(content_length)
+					
 					if  content_length <= 0:
 						status_num,status_comment=(200,'Bad request')
+						header_reply=''
 						content_reply=''
-					elif not mailbox:
-						status_num,status_comment=(203,'No such mailbox')
-						content_reply=''
+						
 					 
 				if m and c:
-					f.write('\n'.encode("ASCII"))	#po hlavičke prázdny riadok
-					f.flush()
-					sprava=f.read(content_length).decode("ASCII")
+					sprava = f.read(content_length).decode("utf-8")
 					hashS = hashlib.md5(sprava.encode())
 					hashS = hashS.hexdigest()
 					umiestnenie = os.path.join(mailbox, hashS)
-					with open (f"{mailbox}/{hashS}","w") as file:
-						file.write(f"{sprava}")
-					status_num,status_comment=(100,'OK')
-					content_reply='\n'
 					
-				f.write(f'{status_num} {status_comment}\n'.encode("ASCII"))
-				f.write(content_reply.encode("ASCII"))
-				f.flush()
+					try:
+						with open (f"{mailbox}/{hashS}","w") as file:
+							file.write(f"{sprava}")
+						
+						status_num,status_comment=(100,'OK')
+						header_reply=''
+						content_reply=''
 					
+					except FileNotFoundError:
+						status_num,status_comment=(203,'No such mailbox')
+
+#LS
 			elif re.match("^LS$",poziadavka):
 			
-				hlavicka=f.readline().decode("ASCII")
+				hlavicka=f.readline().decode("utf-8")
 				m=re.match("\AMailbox",hlavicka)
 				
 				if m:
 					mailbox = hlavicka
 					k=re.split(":",mailbox)
 					mailbox = k[1].rstrip()
-					if "/" in mailbox:
+					
+					if "/" in mailbox or not (all(ord(char) < 128 for char in mailbox[0])):
 						status_num,status_comment=(200,'Bad request')
+						header_reply=''
 						content_reply=''
+						
 					if not os.path.isdir(mailbox):
 						status_num,status_comment=(203,'No such mailbox')
+						header_reply=''
 						content_reply=''
-					else:
-						f.write("\n".encode("ASCII")) #po hlavičke prázdny riadok
-						f.flush()
 						
-						print(os.listdir(mailbox))
+					else:
 						n = len(os.listdir(mailbox))
 						subory=os.listdir(mailbox)
+						
 						status_num,status_comment=(100,'OK')
-						content_reply=(f"Number-of-messages:{n}\n")
-						
-						f.write(f'{status_num} {status_comment}\n'.encode("ASCII"))
-						f.write(f"{content_reply}\n".encode("ASCII"))
+						header_reply=(f"Number-of-messages:{n}\n")
 						for subor in subory:
-							f.write(f"{subor}\n".encode("ASCII"))
-						f.flush()
-						
+							content_reply = '\n'.join(subory) + '\n'
+							
+				hlavicka=f.readline().decode("utf-8")
+				
+#READ						
 			elif re.match("^READ$",poziadavka):
 				
-				hlavicka=f.readline().decode("ASCII")
+				hlavicka=f.readline().decode("utf-8")
 				m=re.match("\AMailbox",hlavicka)
 				
 				if m:
 					mailbox = hlavicka
 					k=re.split(":",mailbox)
 					mailbox = k[1].rstrip()
-					if "/" in mailbox:
+					if "/" in mailbox or not (all(ord(char) < 128 for char in mailbox[0])):
 						status_num,status_comment=(200,'Bad request')
 						content_reply=''
+						header_reply=''
+						
 					
-				hlavicka=f.readline().decode("ASCII")
+				hlavicka=f.readline().decode("utf-8")
 				c=re.match("\AMessage",hlavicka)
 				
 				if c:
 					hashS = hlavicka
 					l=re.split(":",hashS)
 					hashS = l[1].rstrip()
-					if "/" in hashS:
+					if "/" in hashS or not (all(ord(char) < 128 for char in hashS[0])):
 						status_num,status_comment=(200,'Bad request')
-						content_reply=''
-					elif not mailbox:
-						status_num,status_comment=(203,'No such mailbox')
+						header_reply=''
 						content_reply=''
 						
 				if m and c:
 					try:
 						with open (f"{mailbox}/{hashS}", "r") as file:
-							sprava=file.read()
-							
-					except ValueError:
-						status_num,status_comment=(202,'No Read error')
+							status_num,status_comment=(100,'OK')
+							content_reply=file.read()
+							header_reply = (f'Content-length:{len(content_reply)}\n')
+								
+					except FileNotFoundError:
+						status_num,status_comment=(201,'No such message')
+						header_reply=''
 						content_reply=''
-					f.write('\n'.encode("ASCII"))	#po hlavičke prázdny riadok
-					status_num,status_comment=(100,'OK')
-					reply=len(sprava)
-					content_reply=sprava
-					f.flush()
-			
-				f.write(f'{status_num} {status_comment}\n'.encode("ASCII"))
-				f.write(f"Content-length:{reply}\n".encode("ASCII"))
-				f.write("\n".encode("ASCII"))
-				f.write(f"{content_reply}".encode("ASCII"))
-				f.flush()
-
-			elif re.match("^READ$",poziadavka) or re.match("^LS$",poziadavka) or re.match("^WRITE$",poziadavka) != poziadavka:
+						
+					except OSError:
+						status_num,status_comment=(202,'Read error')
+						header_reply=''
+						content_reply=''
+				
+				hlavicka=f.readline().decode("utf-8")
+						
+			else:
 				status_num,status_comment=(204,'Unknown method')
-				content_reply=''
-				f.write(f'{status_num} {status_comment}\n'.encode("ASCII"))
-				f.write(content_reply.encode("ASCII"))
+				
+				f.write(f'{status_num} {status_comment}\n'.encode("utf-8"))
 				f.flush()
+				
 				sys.exit(0)
 				connected_socket.close()
-		print(f'{address} uzavrel spojenie')
+				
+			f.write(f'{status_num} {status_comment}\n'.encode("utf-8"))
+			f.write(f"{header_reply}\n".encode("utf-8"))
+			if content_reply != "":
+				f.write(f"{content_reply}".encode("utf-8"))
+
+			f.flush()
+	
 		sys.exit(0)
+
+
 	else:
 		connected_socket.close()    
 
